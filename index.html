@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>LIF Brain Simulation (toy)</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; margin: 12px; }
+  #controls { display:flex; gap:10px; align-items:center; margin-bottom:8px; flex-wrap:wrap;}
+  canvas { border:1px solid #ddd; background:#111; display:block; margin-top:8px; }
+  label { font-size:14px; }
+  button, input[type=range] { cursor:pointer; }
+  .small { font-size:12px; color:#444; }
+</style>
+</head>
+<body>
+  <h2>Toy LIF Brain Simulation</h2>
+  <div id="controls">
+    <label>Neurons: <input id="nNeurons" type="number" value="64" min="8" max="400" step="1"></label>
+    <label>Conn Prob: <input id="connProb" type="range" min="0" max="1" step="0.01" value="0.2"></label>
+    <span id="connProbVal" class="small"></span>
+    <label>Input Rate (Hz): <input id="inputRate" type="range" min="0" max="200" step="1" value="20"></label>
+    <span id="inputRateVal" class="small"></span>
+    <label>Sim dt (ms): <input id="dt" type="number" value="1" min="0.1" step="0.1"></label>
+    <label><input id="plastic" type="checkbox"> Enable simple STDP</label>
+    <button id="startStop">Start</button>
+    <button id="reset">Reset</button>
+  </div>
+
+  <div class="small">Click on canvas to inject a brief pulse into nearby neurons.</div>
+  <canvas id="cv" width="800" height="400"></canvas>
+
+<script>
+/*
+Toy Leaky Integrate-and-Fire network with simple synaptic plasticity toggle.
+- Neurons are placed on a 2D plane.
+- When V >= Vth neuron spikes, emits to downstream synapses after a short delay.
+- Synapses have weights, initial random; connectivity random with connProb.
+- External Poisson input to each neuron with configurable rate.
+- Optional simple STDP: potentiates if pre-before-post within window, depresses otherwise (very simplified).
+This is an educational toy — not biologically precise.
+*/
+
+const canvas = document.getElementById('cv');
+const ctx = canvas.getContext('2d');
+
+const paramsEl = {
+  nNeurons: document.getElementById('nNeurons'),
+  connProb: document.getElementById('connProb'),
+  connProbVal: document.getElementById('connProbVal'),
+  inputRate: document.getElementById('inputRate'),
+  inputRateVal: document.getElementById('inputRateVal'),
+  dt: document.getElementById('dt'),
+  plastic: document.getElementById('plastic'),
+  startStop: document.getElementById('startStop'),
+  reset: document.getElementById('reset')
+};
+
+paramsEl.connProbVal.textContent = paramsEl.connProb.value;
+paramsEl.inputRateVal.textContent = paramsEl.inputRate.value + ' Hz';
+
+paramsEl.connProb.addEventListener('input', () => paramsEl.connProbVal.textContent = paramsEl.connProb.value);
+paramsEl.inputRate.addEventListener('input', () => paramsEl.inputRateVal.textContent = paramsEl.inputRate.value + ' Hz');
+
+let running = false;
+let simInterval = null;
+
+// --- Network state ---
+let neurons = [];   // array of neuron objects
+let synapses = [];  // adjacency list: synapses[from] = [{to, w, delay, lastPreSpikeTime, lastPostSpikeTime}, ...]
+let timeMs = 0;
+
+function resetNetwork() {
+  timeMs = 0;
+  const N = Math.max(8, Math.min(400, parseInt(paramsEl.nNeurons.value)));
+  const connProb = parseFloat(paramsEl.connProb.value);
+  neurons = new Array(N).fill(0).map((_,i) => {
+    // position for drawing
+    const cols = Math.ceil(Math.sqrt(N));
+    const x = 60 + (i % cols) * ( (canvas.width - 120) / cols );
+    const y = 40 + Math.floor(i / cols) * ( (canvas.height - 80) / cols );
+    return {
+      id: i,
+      x, y,
+      V: Math.random() * -65, // membrane potential mV (around -65 resting)
+      Vrest: -65,
+      Vth: -50,
+      Vreset: -70,
+      tau: 20 + Math.random()*10, // membrane time constant ms
+      refrac: 2 + Math.random()*6, // refractory period ms
+      lastSpike: -1e9,
+      isSpiking: false
+    };
+  });
+
+  // build synapses
+  synapses = Array.from({length: N}, () => []);
+  for (let i=0;i<N;i++){
+    for (let j=0;j<N;j++){
+      if (i===j) continue;
+      if (Math.random() < connProb) {
+        const w = Math.random() * 0.5; // initial weight
+        const delay = 1 + Math.floor(Math.random()*5); // ms
+        synapses[i].push({to:j, w, delay, lastPre: -1e9, lastPost: -1e9});
+      }
+    }
+  }
+  draw();
+}
+
+// --- Input: Poisson background ---
+function poissonSpike(rateHz, dtMs) {
+  const p = rateHz * (dtMs/1000);
+  return Math.random() < p;
+}
+
+// Keep a spike queue for delayed synapses: entries {deliverAt:timeMs, to, weight}
+let spikeQueue = [];
+
+function step(dt) {
+  const N = neurons.length;
+  const inputRate = parseFloat(paramsEl.inputRate.value);
+  const plastic = paramsEl.plastic.checked;
+
+  // 1) external input -> if poisson, add current/weight
+  const extWeight = 1.0; // amplitude of external input
+  for (let i=0;i<N;i++){
+    // decay toward resting
+    const n = neurons[i];
+    // handle refractory
+    if (timeMs - n.lastSpike < n.refrac) {
+      n.V = n.Vreset;
+      n.isSpiking = false;
+      continue;
+    }
+    // leak
+    const dv = (n.Vrest - n.V) * (dt / n.tau);
+    n.V += dv;
+
+    // Poisson input
+    if (poissonSpike(inputRate, dt)) {
+      n.V += extWeight * 2.5;
+    }
+  }
+
+  // 2) deliver queued spikes (synaptic transmission)
+  // process spikeQueue items with deliverAt <= timeMs
+  for (let i=spikeQueue.length-1;i>=0;i--) {
+    const s = spikeQueue[i];
+    if (s.deliverAt <= timeMs) {
+      const target = neurons[s.to];
+      if (target && (timeMs - target.lastSpike >= target.refrac)) {
+        target.V += s.w * 6.0; // synaptic efficacy factor
+      }
+      spikeQueue.splice(i,1);
+    }
+  }
+
+  // 3) Check for spike generation
+  for (let i=0;i<N;i++){
+    const n = neurons[i];
+    if (n.V >= n.Vth && (timeMs - n.lastSpike >= n.refrac)) {
+      // spike!
+      n.lastSpike = timeMs;
+      n.isSpiking = true;
+      // schedule synaptic deliveries
+      for (const s of synapses[i]) {
+        spikeQueue.push({deliverAt: timeMs + s.delay, to: s.to, w: s.w});
+        // STDP bookkeeping: mark lastPre time
+        s.lastPre = timeMs;
+      }
+      // optional: apply simple STDP: for each outgoing synapse, check if posts have spiked recently
+      if (plastic) {
+        for (const s of synapses[i]) {
+          const postNeuron = neurons[s.to];
+          const dtSpike = postNeuron.lastSpike - timeMs; // post - pre
+          // if post spiked shortly after pre (positive dt), potentiate
+          if (dtSpike >= 0 && dtSpike < 20) {
+            s.w += 0.01 * (1 - s.w);
+          }
+          // if post spiked just before pre (negative dt within window), depress
+          if (dtSpike < 0 && Math.abs(dtSpike) < 20) {
+            s.w -= 0.01 * s.w;
+          }
+          // clamp
+          s.w = Math.max(0, Math.min(5, s.w));
+        }
+      }
+      // reset voltage
+      n.V = n.Vreset;
+    } else {
+      n.isSpiking = false;
+    }
+  }
+
+  // 4) Optionally: global homeostasis (tiny weight decay) to keep network stable
+  if (timeMs % 1000 === 0) {
+    for (let i=0;i<N;i++){
+      for (const s of synapses[i]) s.w *= 0.999;
+    }
+  }
+
+  timeMs += dt;
+}
+
+// --- Drawing ---
+function draw() {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // background
+  ctx.fillStyle = '#0b0b0b';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // draw synapses as faint lines (weight -> brightness)
+  for (let i=0;i<synapses.length;i++){
+    const from = neurons[i];
+    for (const s of synapses[i]) {
+      const to = neurons[s.to];
+      // draw short lines only to reduce clutter
+      ctx.beginPath();
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(to.x, to.y);
+      const alpha = Math.min(0.9, Math.log(1 + s.w)/2.5);
+      ctx.strokeStyle = `rgba(255,255,255,${0.02 + alpha*0.08})`;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+
+  // draw neurons
+  for (const n of neurons) {
+    // color by membrane potential
+    const vnorm = Math.min(1, Math.max(0, (n.V + 80) / 40)); // map V (-80 .. -40) -> 0..1
+    // base color
+    const r = Math.floor(50 + 205 * vnorm);
+    const g = Math.floor(50 + 80 * (1 - vnorm));
+    const b = Math.floor(80 + 80 * (1 - vnorm));
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, 6 + Math.min(6, Math.log(1 + Math.abs(n.V - n.Vrest))*1.8), 0, Math.PI*2);
+    if (n.isSpiking) {
+      ctx.fillStyle = 'rgba(255,220,60,1)';
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = 'rgba(255,220,60,0.9)';
+    } else {
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.shadowBlur = 0;
+    }
+    ctx.fill();
+    // small outline
+    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  // HUD: time and rates
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#ddd';
+  ctx.font = '13px system-ui';
+  ctx.fillText(`t = ${Math.floor(timeMs)} ms`, 12, 18);
+
+  // compute instantaneous firing rate (last 200 ms)
+  const windowMs = 200;
+  let spikes=0;
+  for (const n of neurons) if (n.lastSpike > timeMs - windowMs) spikes++;
+  const ratePerNeuron = spikes / (windowMs/1000);
+  ctx.fillText(`mean recent spikes: ${ratePerNeuron.toFixed(2)} Hz (window ${windowMs} ms)`, 12, 36);
+}
+
+// --- Main loop ---
+function loop() {
+  const dt = parseFloat(paramsEl.dt.value); // ms
+  // run several small steps per visual frame for stability
+  const stepsPerFrame = 1;
+  for (let i=0;i<stepsPerFrame;i++) step(dt);
+  draw();
+  if (running) requestAnimationFrame(loop);
+}
+
+// Start/Stop handlers
+paramsEl.startStop.addEventListener('click', () => {
+  running = !running;
+  paramsEl.startStop.textContent = running ? 'Stop' : 'Start';
+  if (running) requestAnimationFrame(loop);
+});
+
+paramsEl.reset.addEventListener('click', () => {
+  running = false;
+  paramsEl.startStop.textContent = 'Start';
+  resetNetwork();
+});
+
+// inject pulse on click
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  // boost neurons near click
+  for (const n of neurons) {
+    const d = Math.hypot(n.x - mx, n.y - my);
+    if (d < 80) n.V += (80 - d)/8;
+  }
+});
+
+// init
+resetNetwork();
+draw();
+
+</script>
+</body>
+</html>
