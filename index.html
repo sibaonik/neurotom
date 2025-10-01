@@ -2,306 +2,453 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>LIF Brain Simulation (toy)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>NeuroTom — LIF Spiking Network (Demo)</title>
+<script src="https://cdn.tailwindcss.com"></script>
 <style>
-  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; margin: 12px; }
-  #controls { display:flex; gap:10px; align-items:center; margin-bottom:8px; flex-wrap:wrap;}
-  canvas { border:1px solid #ddd; background:#111; display:block; margin-top:8px; }
-  label { font-size:14px; }
-  button, input[type=range] { cursor:pointer; }
-  .small { font-size:12px; color:#444; }
+  body { background: #0b0f1a; color: #e6eef8; }
+  .panel { background: linear-gradient(180deg, rgba(17,24,39,0.6), rgba(10,12,20,0.6)); border: 1px solid rgba(255,255,255,0.04); }
+  canvas { image-rendering: optimizeSpeed; }
+  .knob { -webkit-appearance: none; appearance: none; height: 6px; border-radius: 999px; background: linear-gradient(90deg,#7c3aed,#06b6d4); outline: none; }
 </style>
 </head>
-<body>
-  <h2>Toy LIF Brain Simulation</h2>
-  <div id="controls">
-    <label>Neurons: <input id="nNeurons" type="number" value="64" min="8" max="400" step="1"></label>
-    <label>Conn Prob: <input id="connProb" type="range" min="0" max="1" step="0.01" value="0.2"></label>
-    <span id="connProbVal" class="small"></span>
-    <label>Input Rate (Hz): <input id="inputRate" type="range" min="0" max="200" step="1" value="20"></label>
-    <span id="inputRateVal" class="small"></span>
-    <label>Sim dt (ms): <input id="dt" type="number" value="1" min="0.1" step="0.1"></label>
-    <label><input id="plastic" type="checkbox"> Enable simple STDP</label>
-    <button id="startStop">Start</button>
-    <button id="reset">Reset</button>
-  </div>
+<body class="min-h-screen flex flex-col">
 
-  <div class="small">Click on canvas to inject a brief pulse into nearby neurons.</div>
-  <canvas id="cv" width="800" height="400"></canvas>
+  <!-- Header -->
+  <header class="p-4 panel flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold text-indigo-300">🐾 NeuroTom — LIF Spiking Network</h1>
+      <p class="text-sm text-gray-400">Toy Leaky Integrate-and-Fire network — interactive, plasticity, raster plot</p>
+    </div>
+    <div class="text-sm text-gray-400">Tip: click the network to inject a pulse • Right-click an edge to remove a neuron</div>
+  </header>
+
+  <!-- Main -->
+  <main class="flex-1 p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
+    <!-- Controls -->
+    <section class="col-span-1 panel p-4 rounded-lg space-y-4">
+      <h2 class="text-lg font-semibold text-indigo-300">Controls</h2>
+
+      <div>
+        <label class="block text-xs text-gray-300">Neurons</label>
+        <input id="nNeurons" type="number" min="8" max="400" value="64"
+               class="w-full p-2 mt-1 rounded bg-slate-900 text-gray-100" />
+      </div>
+
+      <div>
+        <label class="block text-xs text-gray-300">Connection probability <span id="connProbVal" class="text-indigo-200 ml-1">0.20</span></label>
+        <input id="connProb" class="knob w-full mt-1" type="range" min="0" max="1" step="0.01" value="0.2" />
+      </div>
+
+      <div>
+        <label class="block text-xs text-gray-300">Input rate (Hz)</label>
+        <input id="inputRate" type="range" min="0" max="200" step="1" value="20" class="knob w-full mt-1" />
+        <div class="flex justify-between text-xs text-gray-400 mt-1"><span>0</span><span id="inputRateVal">20 Hz</span><span>200</span></div>
+      </div>
+
+      <div>
+        <label class="block text-xs text-gray-300">Sim dt (ms)</label>
+        <input id="dt" type="number" value="1" min="0.1" step="0.1"
+               class="w-full p-2 mt-1 rounded bg-slate-900 text-gray-100" />
+      </div>
+
+      <div class="flex items-center space-x-2">
+        <input id="plastic" type="checkbox" class="h-4 w-4" />
+        <label for="plastic" class="text-sm text-gray-300">Enable simple plasticity (STDP-like)</label>
+      </div>
+
+      <div class="flex space-x-2 pt-2">
+        <button id="startStop" class="flex-1 bg-emerald-500 hover:bg-emerald-600 py-2 rounded text-black font-semibold">Start</button>
+        <button id="reset" class="flex-1 bg-indigo-600 hover:bg-indigo-700 py-2 rounded text-white">Reset</button>
+      </div>
+
+      <div class="pt-3 text-sm text-gray-300 space-y-1">
+        <div>Time: <span id="timeVal">0</span> ms</div>
+        <div>Mean recent spikes: <span id="rateVal">0.00</span> Hz</div>
+        <div>Neurons: <span id="neuronsVal">64</span></div>
+      </div>
+
+      <div class="pt-3 text-xs text-gray-500 italic">
+        Click canvas to inject pulses. Right-click a neuron (in debug mode) to remove.
+      </div>
+    </section>
+
+    <!-- Visualization: network -->
+    <section class="col-span-1 md:col-span-2 panel p-4 rounded-lg space-y-4">
+      <div class="flex items-center justify-between">
+        <h2 class="text-lg font-semibold text-indigo-300">Network</h2>
+        <div class="text-xs text-gray-400">Interactive visualization</div>
+      </div>
+
+      <canvas id="networkCanvas" width="980" height="420" class="w-full rounded-lg shadow-lg border border-white/5"></canvas>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <h3 class="text-sm text-indigo-200">Raster (recent spikes)</h3>
+          <canvas id="rasterCanvas" width="600" height="140" class="w-full rounded-lg border border-white/5 bg-black"></canvas>
+        </div>
+
+        <div>
+          <h3 class="text-sm text-indigo-200">Weight histogram</h3>
+          <canvas id="histCanvas" width="600" height="140" class="w-full rounded-lg border border-white/5 bg-black"></canvas>
+        </div>
+      </div>
+    </section>
+  </main>
 
 <script>
-/*
-Toy Leaky Integrate-and-Fire network with simple synaptic plasticity toggle.
-- Neurons are placed on a 2D plane.
-- When V >= Vth neuron spikes, emits to downstream synapses after a short delay.
-- Synapses have weights, initial random; connectivity random with connProb.
-- External Poisson input to each neuron with configurable rate.
-- Optional simple STDP: potentiates if pre-before-post within window, depresses otherwise (very simplified).
-This is an educational toy — not biologically precise.
+/* Single-file LIF network demo (client-side)
+   - networkCanvas: visual neuron rendering & synapse lines
+   - rasterCanvas: recent spike events
+   - histCanvas: histogram of synaptic weights
+   Controls:
+   - nNeurons, connProb, inputRate, dt, plastic, start/stop, reset
+   Click on network to inject pulse.
 */
 
-const canvas = document.getElementById('cv');
+const canvas = document.getElementById('networkCanvas');
 const ctx = canvas.getContext('2d');
+const rasterCv = document.getElementById('rasterCanvas');
+const rasterCtx = rasterCv.getContext('2d');
+const histCv = document.getElementById('histCanvas');
+const histCtx = histCv.getContext('2d');
 
-const paramsEl = {
-  nNeurons: document.getElementById('nNeurons'),
-  connProb: document.getElementById('connProb'),
+const params = {
+  nNeuronsEl: document.getElementById('nNeurons'),
+  connProbEl: document.getElementById('connProb'),
   connProbVal: document.getElementById('connProbVal'),
-  inputRate: document.getElementById('inputRate'),
+  inputRateEl: document.getElementById('inputRate'),
   inputRateVal: document.getElementById('inputRateVal'),
-  dt: document.getElementById('dt'),
-  plastic: document.getElementById('plastic'),
-  startStop: document.getElementById('startStop'),
-  reset: document.getElementById('reset')
+  dtEl: document.getElementById('dt'),
+  plasticEl: document.getElementById('plastic'),
+  startStopBtn: document.getElementById('startStop'),
+  resetBtn: document.getElementById('reset'),
+  timeVal: document.getElementById('timeVal'),
+  rateVal: document.getElementById('rateVal'),
+  neuronsVal: document.getElementById('neuronsVal')
 };
 
-paramsEl.connProbVal.textContent = paramsEl.connProb.value;
-paramsEl.inputRateVal.textContent = paramsEl.inputRate.value + ' Hz';
-
-paramsEl.connProb.addEventListener('input', () => paramsEl.connProbVal.textContent = paramsEl.connProb.value);
-paramsEl.inputRate.addEventListener('input', () => paramsEl.inputRateVal.textContent = paramsEl.inputRate.value + ' Hz');
+params.connProbEl.addEventListener('input', () => params.connProbVal.textContent = parseFloat(params.connProbEl.value).toFixed(2));
+params.inputRateEl.addEventListener('input', () => params.inputRateVal.textContent = params.inputRateEl.value + ' Hz');
 
 let running = false;
-let simInterval = null;
+let raf = null;
 
-// --- Network state ---
-let neurons = [];   // array of neuron objects
-let synapses = [];  // adjacency list: synapses[from] = [{to, w, delay, lastPreSpikeTime, lastPostSpikeTime}, ...]
-let timeMs = 0;
+// network state
+let neurons = [];
+let synapses = []; // synapses[from] = [{to, w, delay, lastPre, lastPost}, ...]
+let spikeQueue = [];
+let tMs = 0;
+let rasterWindowMs = 1000; // window to show in raster
+let rasterBuffer = []; // entries: {t, neuronId}
+let histBins = 40;
+
+// init
+resetNetwork();
+drawAll();
 
 function resetNetwork() {
-  timeMs = 0;
-  const N = Math.max(8, Math.min(400, parseInt(paramsEl.nNeurons.value)));
-  const connProb = parseFloat(paramsEl.connProb.value);
+  tMs = 0;
+  rasterBuffer = [];
+  const N = Math.max(8, Math.min(400, parseInt(params.nNeuronsEl.value) || 64));
+  const connProb = parseFloat(params.connProbEl.value) || 0.2;
   neurons = new Array(N).fill(0).map((_,i) => {
-    // position for drawing
     const cols = Math.ceil(Math.sqrt(N));
-    const x = 60 + (i % cols) * ( (canvas.width - 120) / cols );
-    const y = 40 + Math.floor(i / cols) * ( (canvas.height - 80) / cols );
+    const x = 40 + (i % cols) * ((canvas.width - 80) / cols);
+    const y = 40 + Math.floor(i / cols) * ((canvas.height - 80) / cols);
     return {
       id: i,
       x, y,
-      V: Math.random() * -65, // membrane potential mV (around -65 resting)
+      V: -65 + Math.random()*5,
       Vrest: -65,
       Vth: -50,
       Vreset: -70,
-      tau: 20 + Math.random()*10, // membrane time constant ms
-      refrac: 2 + Math.random()*6, // refractory period ms
+      tau: 20 + Math.random()*10,
+      refrac: 2 + Math.random()*6,
       lastSpike: -1e9,
       isSpiking: false
     };
   });
 
-  // build synapses
   synapses = Array.from({length: N}, () => []);
   for (let i=0;i<N;i++){
     for (let j=0;j<N;j++){
       if (i===j) continue;
       if (Math.random() < connProb) {
-        const w = Math.random() * 0.5; // initial weight
-        const delay = 1 + Math.floor(Math.random()*5); // ms
-        synapses[i].push({to:j, w, delay, lastPre: -1e9, lastPost: -1e9});
+        synapses[i].push({
+          to: j,
+          w: Math.random()*0.5,
+          delay: 1 + Math.floor(Math.random()*5),
+          lastPre: -1e9,
+          lastPost: -1e9
+        });
       }
     }
   }
-  draw();
+
+  spikeQueue = [];
+  params.neuronsVal.textContent = N;
 }
 
-// --- Input: Poisson background ---
 function poissonSpike(rateHz, dtMs) {
   const p = rateHz * (dtMs/1000);
   return Math.random() < p;
 }
 
-// Keep a spike queue for delayed synapses: entries {deliverAt:timeMs, to, weight}
-let spikeQueue = [];
-
 function step(dt) {
   const N = neurons.length;
-  const inputRate = parseFloat(paramsEl.inputRate.value);
-  const plastic = paramsEl.plastic.checked;
+  const inputRate = parseFloat(params.inputRateEl.value);
+  const plastic = params.plasticEl.checked;
 
-  // 1) external input -> if poisson, add current/weight
-  const extWeight = 1.0; // amplitude of external input
+  // external input + leak + refractory handling
   for (let i=0;i<N;i++){
-    // decay toward resting
     const n = neurons[i];
-    // handle refractory
-    if (timeMs - n.lastSpike < n.refrac) {
+    if (tMs - n.lastSpike < n.refrac) {
       n.V = n.Vreset;
       n.isSpiking = false;
       continue;
     }
-    // leak
+    // leak toward rest
     const dv = (n.Vrest - n.V) * (dt / n.tau);
     n.V += dv;
 
-    // Poisson input
-    if (poissonSpike(inputRate, dt)) {
-      n.V += extWeight * 2.5;
-    }
+    if (poissonSpike(inputRate, dt)) n.V += 2.5; // ext input amplitude
   }
 
-  // 2) deliver queued spikes (synaptic transmission)
-  // process spikeQueue items with deliverAt <= timeMs
-  for (let i=spikeQueue.length-1;i>=0;i--) {
+  // deliver queued spikes
+  for (let i=spikeQueue.length-1;i>=0;i--){
     const s = spikeQueue[i];
-    if (s.deliverAt <= timeMs) {
+    if (s.deliverAt <= tMs) {
       const target = neurons[s.to];
-      if (target && (timeMs - target.lastSpike >= target.refrac)) {
-        target.V += s.w * 6.0; // synaptic efficacy factor
+      if (target && (tMs - target.lastSpike >= target.refrac)) {
+        target.V += s.w * 6.0;
       }
       spikeQueue.splice(i,1);
     }
   }
 
-  // 3) Check for spike generation
+  // generate spikes
   for (let i=0;i<N;i++){
     const n = neurons[i];
-    if (n.V >= n.Vth && (timeMs - n.lastSpike >= n.refrac)) {
-      // spike!
-      n.lastSpike = timeMs;
+    if (n.V >= n.Vth && (tMs - n.lastSpike >= n.refrac)) {
+      // spike
+      n.lastSpike = tMs;
       n.isSpiking = true;
+      rasterBuffer.push({t: tMs, id: n.id});
       // schedule synaptic deliveries
       for (const s of synapses[i]) {
-        spikeQueue.push({deliverAt: timeMs + s.delay, to: s.to, w: s.w});
-        // STDP bookkeeping: mark lastPre time
-        s.lastPre = timeMs;
+        spikeQueue.push({deliverAt: tMs + s.delay, to: s.to, w: s.w});
+        s.lastPre = tMs;
       }
-      // optional: apply simple STDP: for each outgoing synapse, check if posts have spiked recently
+      // simple plasticity
       if (plastic) {
         for (const s of synapses[i]) {
-          const postNeuron = neurons[s.to];
-          const dtSpike = postNeuron.lastSpike - timeMs; // post - pre
-          // if post spiked shortly after pre (positive dt), potentiate
-          if (dtSpike >= 0 && dtSpike < 20) {
-            s.w += 0.01 * (1 - s.w);
-          }
-          // if post spiked just before pre (negative dt within window), depress
-          if (dtSpike < 0 && Math.abs(dtSpike) < 20) {
-            s.w -= 0.01 * s.w;
-          }
-          // clamp
+          const post = neurons[s.to];
+          const dtSpike = post.lastSpike - tMs; // post - pre
+          if (dtSpike >= 0 && dtSpike < 20) s.w += 0.01 * (1 - s.w);
+          if (dtSpike < 0 && Math.abs(dtSpike) < 20) s.w -= 0.01 * s.w;
           s.w = Math.max(0, Math.min(5, s.w));
         }
       }
-      // reset voltage
       n.V = n.Vreset;
     } else {
       n.isSpiking = false;
     }
   }
 
-  // 4) Optionally: global homeostasis (tiny weight decay) to keep network stable
-  if (timeMs % 1000 === 0) {
+  // small weight decay
+  if (Math.floor(tMs) % 1000 === 0) {
     for (let i=0;i<N;i++){
       for (const s of synapses[i]) s.w *= 0.999;
     }
   }
 
-  timeMs += dt;
+  tMs += dt;
 }
 
-// --- Drawing ---
-function draw() {
+// drawing utilities
+function drawAll() {
+  drawNetwork();
+  drawRaster();
+  drawHist();
+  params.timeVal.textContent = Math.floor(tMs);
+  // mean recent spikes
+  const win = 200;
+  const cutoff = tMs - win;
+  let spikes = 0;
+  for (const n of neurons) if (n.lastSpike > cutoff) spikes++;
+  const ratePerNeuron = spikes / (win/1000);
+  params.rateVal.textContent = ratePerNeuron.toFixed(2);
+}
+
+function drawNetwork() {
   ctx.clearRect(0,0,canvas.width,canvas.height);
   // background
-  ctx.fillStyle = '#0b0b0b';
+  ctx.fillStyle = '#06070a';
   ctx.fillRect(0,0,canvas.width,canvas.height);
 
-  // draw synapses as faint lines (weight -> brightness)
+  // synapses (faint)
+  ctx.lineWidth = 1;
   for (let i=0;i<synapses.length;i++){
     const from = neurons[i];
     for (const s of synapses[i]) {
       const to = neurons[s.to];
-      // draw short lines only to reduce clutter
+      const alpha = Math.min(0.9, Math.log(1 + s.w)/2.5);
+      ctx.strokeStyle = `rgba(180,200,255,${0.02 + alpha*0.06})`;
       ctx.beginPath();
       ctx.moveTo(from.x, from.y);
       ctx.lineTo(to.x, to.y);
-      const alpha = Math.min(0.9, Math.log(1 + s.w)/2.5);
-      ctx.strokeStyle = `rgba(255,255,255,${0.02 + alpha*0.08})`;
-      ctx.lineWidth = 1;
       ctx.stroke();
     }
   }
 
-  // draw neurons
+  // neurons
   for (const n of neurons) {
-    // color by membrane potential
-    const vnorm = Math.min(1, Math.max(0, (n.V + 80) / 40)); // map V (-80 .. -40) -> 0..1
-    // base color
-    const r = Math.floor(50 + 205 * vnorm);
-    const g = Math.floor(50 + 80 * (1 - vnorm));
-    const b = Math.floor(80 + 80 * (1 - vnorm));
+    const vnorm = Math.min(1, Math.max(0, (n.V + 80) / 40)); // -80..-40 => 0..1
+    const r = Math.floor(40 + 215 * vnorm);
+    const g = Math.floor(60 + 60 * (1 - vnorm));
+    const b = Math.floor(100 + 60 * (1 - vnorm));
     ctx.beginPath();
-    ctx.arc(n.x, n.y, 6 + Math.min(6, Math.log(1 + Math.abs(n.V - n.Vrest))*1.8), 0, Math.PI*2);
+    const radius = 5 + (n.isSpiking ? 5 : 0);
+    ctx.arc(n.x, n.y, radius, 0, Math.PI*2);
     if (n.isSpiking) {
-      ctx.fillStyle = 'rgba(255,220,60,1)';
-      ctx.shadowBlur = 10;
-      ctx.shadowColor = 'rgba(255,220,60,0.9)';
+      ctx.fillStyle = 'rgba(255,210,80,1)';
+      ctx.shadowColor = 'rgba(255,210,80,0.9)';
+      ctx.shadowBlur = 12;
     } else {
       ctx.fillStyle = `rgb(${r},${g},${b})`;
       ctx.shadowBlur = 0;
     }
     ctx.fill();
-    // small outline
-    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+    ctx.lineWidth = 0.8;
     ctx.stroke();
   }
-
-  // HUD: time and rates
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = '#ddd';
-  ctx.font = '13px system-ui';
-  ctx.fillText(`t = ${Math.floor(timeMs)} ms`, 12, 18);
-
-  // compute instantaneous firing rate (last 200 ms)
-  const windowMs = 200;
-  let spikes=0;
-  for (const n of neurons) if (n.lastSpike > timeMs - windowMs) spikes++;
-  const ratePerNeuron = spikes / (windowMs/1000);
-  ctx.fillText(`mean recent spikes: ${ratePerNeuron.toFixed(2)} Hz (window ${windowMs} ms)`, 12, 36);
 }
 
-// --- Main loop ---
+function drawRaster() {
+  rasterCtx.clearRect(0,0,rasterCv.width,rasterCv.height);
+  rasterCtx.fillStyle = '#06070a';
+  rasterCtx.fillRect(0,0,rasterCv.width,rasterCv.height);
+  // keep only recent spikes
+  const minT = tMs - rasterWindowMs;
+  const recent = rasterBuffer.filter(s => s.t >= minT);
+  // map neuron id to y
+  const N = neurons.length || 1;
+  const h = rasterCv.height;
+  for (const s of recent) {
+    const x = ((s.t - minT) / rasterWindowMs) * rasterCv.width;
+    const y = (s.id / N) * h;
+    rasterCtx.fillStyle = 'rgba(255,220,100,0.95)';
+    rasterCtx.fillRect(x, y, 2, Math.max(1, h / N));
+  }
+}
+
+function drawHist() {
+  histCtx.clearRect(0,0,histCv.width,histCv.height);
+  histCtx.fillStyle = '#06070a';
+  histCtx.fillRect(0,0,histCv.width,histCv.height);
+  // collect weights
+  const weights = [];
+  for (const list of synapses) for (const s of list) weights.push(s.w);
+  if (weights.length === 0) return;
+  const maxW = Math.max(...weights);
+  const minW = 0;
+  const bins = new Array(histBins).fill(0);
+  for (const w of weights) {
+    const idx = Math.floor(((w - minW) / (maxW - minW + 1e-9)) * (histBins-1));
+    bins[Math.max(0, Math.min(histBins-1, idx))]++;
+  }
+  const bw = histCv.width / histBins;
+  const maxCount = Math.max(...bins);
+  for (let i=0;i<histBins;i++){
+    const h = (bins[i] / maxCount) * histCv.height;
+    histCtx.fillStyle = 'rgba(120,160,255,0.9)';
+    histCtx.fillRect(i * bw + 1, histCv.height - h, bw - 2, h);
+  }
+}
+
+// main loop
 function loop() {
-  const dt = parseFloat(paramsEl.dt.value); // ms
-  // run several small steps per visual frame for stability
-  const stepsPerFrame = 1;
-  for (let i=0;i<stepsPerFrame;i++) step(dt);
-  draw();
-  if (running) requestAnimationFrame(loop);
+  const dt = parseFloat(params.dtEl.value) || 1;
+  // run multiple steps if dt large
+  step(dt);
+  drawAll();
+  if (running) raf = requestAnimationFrame(loop);
 }
 
-// Start/Stop handlers
-paramsEl.startStop.addEventListener('click', () => {
+params.startStopBtn.addEventListener('click', () => {
   running = !running;
-  paramsEl.startStop.textContent = running ? 'Stop' : 'Start';
-  if (running) requestAnimationFrame(loop);
+  params.startStopBtn.textContent = running ? 'Stop' : 'Start';
+  params.startStopBtn.classList.toggle('bg-emerald-500');
+  params.startStopBtn.classList.toggle('bg-red-500');
+  if (running) {
+    raf = requestAnimationFrame(loop);
+  } else {
+    if (raf) cancelAnimationFrame(raf);
+    raf = null;
+  }
 });
 
-paramsEl.reset.addEventListener('click', () => {
+params.resetBtn.addEventListener('click', () => {
   running = false;
-  paramsEl.startStop.textContent = 'Start';
+  if (raf) cancelAnimationFrame(raf);
+  raf = null;
+  params.startStopBtn.textContent = 'Start';
   resetNetwork();
+  drawAll();
 });
 
-// inject pulse on click
+// canvas click -> inject
 canvas.addEventListener('click', (e) => {
   const rect = canvas.getBoundingClientRect();
   const mx = e.clientX - rect.left;
   const my = e.clientY - rect.top;
-  // boost neurons near click
   for (const n of neurons) {
     const d = Math.hypot(n.x - mx, n.y - my);
-    if (d < 80) n.V += (80 - d)/8;
+    if (d < 80) n.V += (80 - d)/6;
   }
+  drawAll();
 });
 
-// init
-resetNetwork();
-draw();
+// optional right-click remove neuron (debug)
+canvas.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  // find closest neuron
+  let best = null, bestD = 1e9;
+  for (const n of neurons) {
+    const d = Math.hypot(n.x - mx, n.y - my);
+    if (d < bestD) { bestD = d; best = n; }
+  }
+  if (best && bestD < 18) {
+    // remove neuron: mark as disabled (simple)
+    neurons = neurons.filter(x => x.id !== best.id);
+    synapses.splice(best.id,1);
+    for (let i=0;i<synapses.length;i++){
+      synapses[i] = synapses[i].filter(s => s.to !== best.id);
+      // adjust indices greater than id
+      synapses[i].forEach(s => { if (s.to > best.id) s.to--; });
+    }
+    // reindex neurons
+    neurons.forEach((n, idx) => n.id = idx);
+    params.neuronsVal.textContent = neurons.length;
+  }
+  drawAll();
+});
+
+// keep UI values consistent if user types neurons
+params.nNeuronsEl.addEventListener('change', () => {
+  params.neuronsVal.textContent = params.nNeuronsEl.value;
+});
+
+// responsive redraw on window resize
+window.addEventListener('resize', () => {
+  // optional: adapt canvas sizes
+  drawAll();
+});
 
 </script>
 </body>
